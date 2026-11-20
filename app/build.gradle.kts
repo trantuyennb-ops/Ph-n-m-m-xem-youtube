@@ -8,7 +8,7 @@ kotlin {
 
 android {
     namespace = "com.tuyen.tubeviet"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.tuyen.tubeviet"
