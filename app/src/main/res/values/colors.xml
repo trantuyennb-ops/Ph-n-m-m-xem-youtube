@@ -1,0 +1,8 @@
+<resources>
+    <color name="red">#FF0000</color>
+    <color name="bg">#0F0F0F</color>
+    <color name="surface">#212121</color>
+    <color name="chip">#272727</color>
+    <color name="text">#F1F1F1</color>
+    <color name="text2">#AAAAAA</color>
+</resources>
