@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.os.Build
 import android.os.Bundle
 import android.text.method.LinkMovementMethod
 import android.util.Rational
@@ -125,6 +126,11 @@ class WatchActivity : AppCompatActivity() {
         findViewById<View>(R.id.btn_settings).setOnClickListener { showSettings() }
         findViewById<View>(R.id.btn_pip).setOnClickListener { enterPip() }
         header.findViewById<View>(R.id.btn_pip2).setOnClickListener { enterPip() }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            // Android dưới 8 không có chế độ thu nhỏ
+            findViewById<View>(R.id.btn_pip).visibility = View.GONE
+            header.findViewById<View>(R.id.btn_pip2).visibility = View.GONE
+        }
         header.findViewById<View>(R.id.btn_share).setOnClickListener { share() }
         findViewById<View>(R.id.player_retry).setOnClickListener {
             currentUrl?.let { load(it, false, keepPosition = true) }
@@ -390,7 +396,7 @@ class WatchActivity : AppCompatActivity() {
 
     private fun updatePlayerSize() {
         val lp = playerBox.layoutParams as LinearLayout.LayoutParams
-        if (fullscreen || isInPictureInPictureMode) {
+        if (fullscreen || inPip()) {
             lp.height = ViewGroup.LayoutParams.MATCH_PARENT
             lp.weight = 1f
         } else {
@@ -402,7 +408,7 @@ class WatchActivity : AppCompatActivity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        if (isInPictureInPictureMode) return
+        if (inPip()) return
         // Xoay ngang điện thoại -> tự vào toàn màn hình như YouTube
         if (newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE && !fullscreen) {
             setFullscreen(true)
@@ -413,8 +419,11 @@ class WatchActivity : AppCompatActivity() {
         }
     }
 
+    private fun inPip() =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode
+
     private fun enterPip() {
-        if (info == null) return
+        if (info == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         try {
             enterPictureInPictureMode(
                 PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9)).build()
