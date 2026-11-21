@@ -45,6 +45,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.schabi.newpipe.extractor.exceptions.AgeRestrictedContentException
+import org.schabi.newpipe.extractor.exceptions.ContentNotAvailableException
+import org.schabi.newpipe.extractor.exceptions.GeographicRestrictionException
+import org.schabi.newpipe.extractor.exceptions.PaidContentException
+import org.schabi.newpipe.extractor.exceptions.PrivateContentException
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.Description
 import org.schabi.newpipe.extractor.stream.StreamInfo
@@ -71,6 +76,7 @@ class WatchActivity : AppCompatActivity() {
     private val backStack = ArrayDeque<String>()
     private var loadJob: Job? = null
     private var fullscreen = false
+    private lateinit var embed: EmbedPlayer
     private var forcedLandscape = false
     private var headerReady = false
     private lateinit var leftCol: View
@@ -92,6 +98,7 @@ class WatchActivity : AppCompatActivity() {
         playerBox = findViewById(R.id.player_box)
         list = findViewById(R.id.list)
         loadingView = findViewById(R.id.player_loading)
+        embed = EmbedPlayer(findViewById(R.id.web_player))
         errorBox = findViewById(R.id.player_error)
         errorText = findViewById(R.id.player_error_text)
         overlay = findViewById(R.id.overlay_buttons)
@@ -197,6 +204,9 @@ class WatchActivity : AppCompatActivity() {
         loadJob?.cancel()
         player.stop()
         player.clearMediaItems()
+        embed.stop()
+        playerView.visibility = View.VISIBLE
+        info = null
         errorBox.visibility = View.GONE
         loadingView.visibility = View.VISIBLE
         headerReady = false
@@ -236,7 +246,7 @@ class WatchActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 loadingView.visibility = View.GONE
-                showError(errorMessage(e))
+                if (canFallback(e)) playEmbed(url, resumeAt) else showError(errorMessage(e))
             }
         }
     }
@@ -246,7 +256,7 @@ class WatchActivity : AppCompatActivity() {
         val source = PlayerSource.build(i, quality, audio)
         loadingView.visibility = View.GONE
         if (source == null) {
-            showError("Không tìm thấy luồng phát cho video này.")
+            currentUrl?.let { playEmbed(it, positionMs) }
             return
         }
         errorBox.visibility = View.GONE
@@ -273,7 +283,41 @@ class WatchActivity : AppCompatActivity() {
             currentUrl?.let { load(it, false, keepPosition = true) }
             return
         }
-        showError("Không phát được video.\n(${error.errorCodeName})")
+        // Bộ đọc chính không phát được -> chuyển sang trình phát dự phòng
+        currentUrl?.let { playEmbed(it, pos) }
+    }
+
+    /** Lỗi do YouTube từ chối bộ đọc chính (không phải video riêng tư/trả phí/bị chặn vùng). */
+    private fun canFallback(e: Throwable): Boolean {
+        var t: Throwable? = e
+        while (t != null) {
+            when (t) {
+                is PrivateContentException, is PaidContentException,
+                is AgeRestrictedContentException, is GeographicRestrictionException -> return false
+                is ContentNotAvailableException -> return true
+            }
+            t = t.cause
+        }
+        return false
+    }
+
+    private fun playEmbed(url: String, positionMs: Long) {
+        val id = try {
+            Yt.service.streamLHFactory.getId(url)
+        } catch (_: Exception) {
+            null
+        }
+        if (id == null) {
+            showError("Không phát được video này.")
+            return
+        }
+        player.stop()
+        playerView.visibility = View.INVISIBLE
+        errorBox.visibility = View.GONE
+        loadingView.visibility = View.GONE
+        overlay.visibility = View.VISIBLE
+        embed.play(id, if (positionMs > 0) positionMs / 1000 else 0)
+        Toast.makeText(this, "Đang phát bằng trình phát dự phòng", Toast.LENGTH_SHORT).show()
     }
 
     private fun showError(msg: String) {
@@ -325,6 +369,12 @@ class WatchActivity : AppCompatActivity() {
         getSharedPreferences("settings", Context.MODE_PRIVATE).getInt("quality", 720)
 
     private fun showSettings() {
+        if (embed.active) {
+            Toast.makeText(
+                this, "Trình phát dự phòng tự chọn chất lượng theo mạng", Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
         val q = quality?.getResolution() ?: "Tự động"
         val items = arrayOf("Chất lượng: $q", "Tốc độ phát: ${fmtSpeed(speed)}")
         AlertDialog.Builder(this)
@@ -550,12 +600,19 @@ class WatchActivity : AppCompatActivity() {
         saveCurrentPosition()
         // Đóng cửa sổ thu nhỏ hoặc thoát app -> dừng phát
         player.pause()
+        embed.pause()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        embed.resume()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         saveCurrentPosition()
         player.release()
+        embed.destroy()
     }
 
     companion object {
