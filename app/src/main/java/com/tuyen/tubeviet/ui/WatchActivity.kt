@@ -3,11 +3,13 @@ package com.tuyen.tubeviet.ui
 import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.text.method.LinkMovementMethod
 import android.util.Rational
 import android.view.GestureDetector
@@ -44,6 +46,8 @@ import com.google.android.exoplayer2.audio.AudioAttributes
 import com.google.android.exoplayer2.ui.StyledPlayerView
 import com.tuyen.tubeviet.History
 import com.tuyen.tubeviet.Item
+import com.tuyen.tubeviet.PlayerHolder
+import com.tuyen.tubeviet.PlayerService
 import com.tuyen.tubeviet.PlayerSource
 import com.tuyen.tubeviet.R
 import com.tuyen.tubeviet.SearchFeed
@@ -84,6 +88,9 @@ class WatchActivity : AppCompatActivity() {
     private var loadJob: Job? = null
     private var fullscreen = false
     private lateinit var embed: EmbedPlayer
+    private lateinit var playerListener: Player.Listener
+    // Đã chuyển video sang cửa sổ nổi / phát nền khi rời app
+    private var handedOff = false
     // Chế độ thu nhỏ video + ô tìm kiếm
     private var minimized = false
     private lateinit var searchBar: View
@@ -134,18 +141,8 @@ class WatchActivity : AppCompatActivity() {
         btnFullscreen = findViewById(R.id.btn_fullscreen)
         btnFullscreen.setOnClickListener { toggleFullscreen() }
 
-        player = ExoPlayer.Builder(this)
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(C.USAGE_MEDIA)
-                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
-                    .build(),
-                true
-            )
-            .setHandleAudioBecomingNoisy(true)
-            .setSeekBackIncrementMs(10_000)
-            .setSeekForwardIncrementMs(10_000)
-            .build()
+        player = PlayerHolder.get(this)
+        PlayerHolder.activityAlive = true
         playerView.player = player
         playerView.setShowNextButton(false)
         playerView.setShowPreviousButton(false)
@@ -155,7 +152,7 @@ class WatchActivity : AppCompatActivity() {
                 btnMinimize.visibility = v
             }
         )
-        player.addListener(object : Player.Listener {
+        playerListener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 playerView.keepScreenOn = isPlaying
                 miniPlay.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
@@ -172,7 +169,8 @@ class WatchActivity : AppCompatActivity() {
             }
 
             override fun onPlayerError(error: PlaybackException) = handlePlayerError(error)
-        })
+        }
+        player.addListener(playerListener)
 
         adapter = ItemAdapter(
             onClick = { if (!it.isChannel) load(it.url, true) else Nav.channel(this, it.url) },
@@ -183,13 +181,8 @@ class WatchActivity : AppCompatActivity() {
         header = LayoutInflater.from(this).inflate(R.layout.header_watch, list, false)
 
         findViewById<View>(R.id.btn_settings).setOnClickListener { showSettings() }
-        findViewById<View>(R.id.btn_pip).setOnClickListener { enterPip() }
-        header.findViewById<View>(R.id.btn_pip2).setOnClickListener { enterPip() }
-        if (!hasPip) {
-            // Máy không hỗ trợ chế độ thu nhỏ (Android dưới 8 hoặc nhiều màn hình ô tô)
-            findViewById<View>(R.id.btn_pip).visibility = View.GONE
-            header.findViewById<View>(R.id.btn_pip2).visibility = View.GONE
-        }
+        findViewById<View>(R.id.btn_pip).setOnClickListener { miniWindow() }
+        header.findViewById<View>(R.id.btn_pip2).setOnClickListener { miniWindow() }
         header.findViewById<View>(R.id.btn_share).setOnClickListener { share() }
         findViewById<View>(R.id.player_retry).setOnClickListener {
             currentUrl?.let { load(it, false, keepPosition = true) }
@@ -230,6 +223,8 @@ class WatchActivity : AppCompatActivity() {
             if (currentUrl == null) finish()
             return
         }
+        // Bấm từ cửa sổ nổi / thông báo quay lại đúng video đang phát -> không tải lại
+        if (url == currentUrl) return
         load(url, currentUrl != null)
     }
 
@@ -639,9 +634,68 @@ class WatchActivity : AppCompatActivity() {
         }
     }
 
+    /** Nút "Thu nhỏ": cửa sổ thu nhỏ của hệ thống, nếu máy không có thì dùng cửa sổ nổi. */
+    private fun miniWindow() {
+        if (info == null) return
+        if (hasPip) {
+            enterPip()
+            return
+        }
+        if (!PlayerService.canPopup(this)) {
+            askOverlayPermission()
+            return
+        }
+        handOff()
+        moveTaskToBack(true)
+    }
+
+    private fun askOverlayPermission() {
+        AlertDialog.Builder(this)
+            .setTitle("Cho phép cửa sổ nổi")
+            .setMessage(
+                "Để video thu nhỏ nổi trên các ứng dụng khác, hãy bật quyền " +
+                    "\"Hiển thị trên ứng dụng khác\" cho TubeViet ở màn hình tiếp theo, " +
+                    "rồi quay lại app."
+            )
+            .setPositiveButton("Mở cài đặt") { _, _ ->
+                try {
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:$packageName")
+                        )
+                    )
+                } catch (_: Exception) {
+                    Toast.makeText(this, "Máy không mở được mục cài đặt này", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("Để sau", null)
+            .show()
+    }
+
+    /** Chuyển video sang cửa sổ nổi (nếu được phép) hoặc phát nền khi rời app. */
+    private fun handOff() {
+        if (handedOff || embed.active || info == null) return
+        handedOff = true
+        saveCurrentPosition()
+        PlayerHolder.title = info?.name ?: ""
+        PlayerHolder.url = currentUrl
+        if (PlayerService.canPopup(this)) {
+            PlayerService.start(this, PlayerService.ACTION_POPUP)
+        } else {
+            PlayerService.start(this, PlayerService.ACTION_BACKGROUND)
+            Toast.makeText(
+                this,
+                "Đang phát nền. Bật quyền \"Hiển thị trên ứng dụng khác\" để có cửa sổ video nổi.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (player.isPlaying) enterPip()
+        if (!player.isPlaying) return
+        if (hasPip) enterPip() else handOff()
     }
 
     override fun onPictureInPictureModeChanged(isInPip: Boolean, newConfig: Configuration) {
@@ -789,20 +843,30 @@ class WatchActivity : AppCompatActivity() {
     override fun onStop() {
         super.onStop()
         saveCurrentPosition()
-        // Đóng cửa sổ thu nhỏ hoặc thoát app -> dừng phát
-        player.pause()
+        // Rời app mà không chuyển sang cửa sổ nổi / phát nền -> dừng phát
+        if (!handedOff) player.pause()
         embed.pause()
     }
 
     override fun onStart() {
         super.onStart()
         embed.resume()
+        if (handedOff) {
+            // Quay lại app: lấy video về màn hình chính
+            handedOff = false
+            PlayerService.handBack(this)
+            playerView.player = null
+            playerView.player = player
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         saveCurrentPosition()
-        player.release()
+        PlayerHolder.activityAlive = false
+        player.removeListener(playerListener)
+        playerView.player = null
+        if (!handedOff && !PlayerService.running) PlayerHolder.release()
         embed.destroy()
     }
 
