@@ -6,6 +6,12 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
+    <LinearLayout
+        android:id="@+id/left_col"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
     <FrameLayout
         android:id="@+id/player_box"
         android:layout_width="match_parent"
@@ -47,6 +53,15 @@
                 android:contentDescription="Cài đặt"
                 android:src="@drawable/ic_tune"
                 app:tint="@android:color/white" />
+
+            <ImageButton
+                android:id="@+id/btn_fullscreen"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Phóng to"
+                android:src="@drawable/ic_fullscreen"
+                app:tint="@android:color/white" />
         </LinearLayout>
 
         <ProgressBar
@@ -85,6 +100,21 @@
                 android:textAllCaps="false" />
         </LinearLayout>
     </FrameLayout>
+
+        <!-- Màn hình ngang (tablet, màn hình ô tô): thông tin video nằm dưới trình phát -->
+        <ScrollView
+            android:id="@+id/info_scroll"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:visibility="gone">
+
+            <FrameLayout
+                android:id="@+id/info_holder"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+        </ScrollView>
+    </LinearLayout>
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/list"

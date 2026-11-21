@@ -4,6 +4,7 @@ import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +13,7 @@ import android.util.Rational
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -69,6 +71,16 @@ class WatchActivity : AppCompatActivity() {
     private val backStack = ArrayDeque<String>()
     private var loadJob: Job? = null
     private var fullscreen = false
+    private var forcedLandscape = false
+    private var headerReady = false
+    private lateinit var leftCol: View
+    private lateinit var infoScroll: View
+    private lateinit var infoHolder: ViewGroup
+    private lateinit var btnFullscreen: ImageButton
+    private val hasPip by lazy {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+    }
     private var autoRetries = 0
     private var speed = 1f
 
@@ -83,6 +95,11 @@ class WatchActivity : AppCompatActivity() {
         errorBox = findViewById(R.id.player_error)
         errorText = findViewById(R.id.player_error_text)
         overlay = findViewById(R.id.overlay_buttons)
+        leftCol = findViewById(R.id.left_col)
+        infoScroll = findViewById(R.id.info_scroll)
+        infoHolder = findViewById(R.id.info_holder)
+        btnFullscreen = findViewById(R.id.btn_fullscreen)
+        btnFullscreen.setOnClickListener { toggleFullscreen() }
 
         player = ExoPlayer.Builder(this)
             .setAudioAttributes(
@@ -99,7 +116,6 @@ class WatchActivity : AppCompatActivity() {
         playerView.player = player
         playerView.setShowNextButton(false)
         playerView.setShowPreviousButton(false)
-        playerView.setFullscreenButtonClickListener { toggleFullscreen() }
         playerView.setControllerVisibilityListener(
             StyledPlayerView.ControllerVisibilityListener { v -> overlay.visibility = v }
         )
@@ -126,8 +142,8 @@ class WatchActivity : AppCompatActivity() {
         findViewById<View>(R.id.btn_settings).setOnClickListener { showSettings() }
         findViewById<View>(R.id.btn_pip).setOnClickListener { enterPip() }
         header.findViewById<View>(R.id.btn_pip2).setOnClickListener { enterPip() }
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            // Android dưới 8 không có chế độ thu nhỏ
+        if (!hasPip) {
+            // Máy không hỗ trợ chế độ thu nhỏ (Android dưới 8 hoặc nhiều màn hình ô tô)
             findViewById<View>(R.id.btn_pip).visibility = View.GONE
             header.findViewById<View>(R.id.btn_pip2).visibility = View.GONE
         }
@@ -183,7 +199,8 @@ class WatchActivity : AppCompatActivity() {
         player.clearMediaItems()
         errorBox.visibility = View.GONE
         loadingView.visibility = View.VISIBLE
-        adapter.header = null
+        headerReady = false
+        placeHeader()
         adapter.set(emptyList())
         list.scrollToPosition(0)
 
@@ -192,7 +209,8 @@ class WatchActivity : AppCompatActivity() {
                 val i = withContext(Dispatchers.IO) { StreamInfo.getInfo(Yt.service, url) }
                 info = i
                 bindHeader(i)
-                adapter.header = header
+                headerReady = true
+                placeHeader()
                 adapter.set(i.relatedItems.mapNotNull { Item.from(it) })
                 History.add(
                     Item(
@@ -369,9 +387,16 @@ class WatchActivity : AppCompatActivity() {
     private fun toggleFullscreen() {
         if (fullscreen) {
             setFullscreen(false)
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            if (forcedLandscape) {
+                forcedLandscape = false
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            }
         } else {
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            // Chỉ xoay ngang khi đang cầm dọc (điện thoại). Màn hình vốn nằm ngang thì giữ nguyên.
+            if (resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT) {
+                forcedLandscape = true
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            }
             setFullscreen(true)
         }
     }
@@ -383,27 +408,93 @@ class WatchActivity : AppCompatActivity() {
             ctrl.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             ctrl.hide(WindowInsetsCompat.Type.systemBars())
-            list.visibility = View.GONE
         } else {
             ctrl.show(WindowInsetsCompat.Type.systemBars())
-            list.visibility = View.VISIBLE
-            if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            }
         }
+        btnFullscreen.setImageResource(
+            if (on) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen
+        )
+        btnFullscreen.contentDescription = if (on) "Thu nhỏ" else "Phóng to"
         updatePlayerSize()
     }
 
+    private fun isWide() =
+        resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    /**
+     * Sắp xếp màn hình xem video:
+     * - Toàn màn hình / thu nhỏ: chỉ có trình phát.
+     * - Màn hình ngang (tablet, màn hình ô tô): trình phát + thông tin bên trái, video liên quan bên phải.
+     * - Màn hình dọc (điện thoại): trình phát ở trên, thông tin + video liên quan ở dưới.
+     */
     private fun updatePlayerSize() {
-        val lp = playerBox.layoutParams as LinearLayout.LayoutParams
-        if (fullscreen || inPip()) {
-            lp.height = ViewGroup.LayoutParams.MATCH_PARENT
-            lp.weight = 1f
-        } else {
-            lp.height = resources.displayMetrics.widthPixels * 9 / 16
-            lp.weight = 0f
+        val root = findViewById<LinearLayout>(R.id.root)
+        val leftLp = leftCol.layoutParams as LinearLayout.LayoutParams
+        val boxLp = playerBox.layoutParams as LinearLayout.LayoutParams
+        val listLp = list.layoutParams as LinearLayout.LayoutParams
+        val big = fullscreen || inPip()
+        val wide = !big && isWide()
+        val screenW = resources.displayMetrics.widthPixels
+        root.orientation = if (wide) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        when {
+            big -> {
+                leftLp.width = ViewGroup.LayoutParams.MATCH_PARENT
+                leftLp.height = ViewGroup.LayoutParams.MATCH_PARENT
+                leftLp.weight = 1f
+                boxLp.height = 0
+                boxLp.weight = 1f
+                infoScroll.visibility = View.GONE
+                list.visibility = View.GONE
+            }
+            wide -> {
+                leftLp.width = 0
+                leftLp.height = ViewGroup.LayoutParams.MATCH_PARENT
+                leftLp.weight = 62f
+                boxLp.height = (screenW * 0.62f * 9 / 16).toInt()
+                boxLp.weight = 0f
+                listLp.width = 0
+                listLp.height = ViewGroup.LayoutParams.MATCH_PARENT
+                listLp.weight = 38f
+                infoScroll.visibility = View.VISIBLE
+                list.visibility = View.VISIBLE
+            }
+            else -> {
+                leftLp.width = ViewGroup.LayoutParams.MATCH_PARENT
+                leftLp.height = ViewGroup.LayoutParams.WRAP_CONTENT
+                leftLp.weight = 0f
+                boxLp.height = screenW * 9 / 16
+                boxLp.weight = 0f
+                listLp.width = ViewGroup.LayoutParams.MATCH_PARENT
+                listLp.height = 0
+                listLp.weight = 1f
+                infoScroll.visibility = View.GONE
+                list.visibility = View.VISIBLE
+            }
         }
-        playerBox.layoutParams = lp
+        leftCol.layoutParams = leftLp
+        playerBox.layoutParams = boxLp
+        list.layoutParams = listLp
+        placeHeader()
+    }
+
+    /** Đặt phần thông tin video vào đúng chỗ theo kiểu màn hình. */
+    private fun placeHeader() {
+        if (!headerReady) {
+            adapter.header = null
+            infoHolder.removeAllViews()
+            return
+        }
+        if (isWide() && !fullscreen) {
+            if (header.parent !== infoHolder) {
+                adapter.header = null
+                (header.parent as? ViewGroup)?.removeView(header)
+                infoHolder.addView(header)
+                infoScroll.scrollTo(0, 0)
+            }
+        } else if (adapter.header == null) {
+            infoHolder.removeAllViews()
+            adapter.header = header
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -423,7 +514,7 @@ class WatchActivity : AppCompatActivity() {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode
 
     private fun enterPip() {
-        if (info == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (info == null || !hasPip || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         try {
             enterPictureInPictureMode(
                 PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9)).build()
@@ -442,7 +533,6 @@ class WatchActivity : AppCompatActivity() {
         super.onPictureInPictureModeChanged(isInPip, newConfig)
         playerView.useController = !isInPip
         overlay.visibility = View.GONE
-        list.visibility = if (isInPip || fullscreen) View.GONE else View.VISIBLE
         updatePlayerSize()
     }
 
