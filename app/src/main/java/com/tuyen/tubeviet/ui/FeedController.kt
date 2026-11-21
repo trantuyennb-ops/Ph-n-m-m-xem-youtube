@@ -27,6 +27,7 @@ class FeedController(
         recycler.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
                 val lm = rv.layoutManager as? LinearLayoutManager ?: return
+                if (rv.adapter !== adapter) return
                 if (dy > 0 && lm.findLastVisibleItemPosition() >= adapter.itemCount - 4) {
                     loadMore()
                 }

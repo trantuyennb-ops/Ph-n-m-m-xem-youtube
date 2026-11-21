@@ -15,7 +15,10 @@ import java.io.ByteArrayInputStream
  * Chỉ dùng khi bộ đọc chính không lấy được video (ví dụ một số video thiếu nhi).
  * Chặn các yêu cầu tải quảng cáo của trình phát nhúng.
  */
-class EmbedPlayer(private val web: WebView) {
+class EmbedPlayer(
+    private val web: WebView,
+    private val onLoading: (Boolean) -> Unit = {},
+) {
 
     var active = false
         private set
@@ -32,7 +35,11 @@ class EmbedPlayer(private val web: WebView) {
         web.settings.mediaPlaybackRequiresUserGesture = false
         web.settings.loadWithOverviewMode = true
         web.settings.useWideViewPort = true
-        web.webChromeClient = WebChromeClient()
+        web.webChromeClient = object : WebChromeClient() {
+            override fun onProgressChanged(view: WebView, newProgress: Int) {
+                if (active) onLoading(newProgress < 100)
+            }
+        }
         web.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(
                 view: WebView, request: WebResourceRequest
@@ -77,6 +84,7 @@ class EmbedPlayer(private val web: WebView) {
     fun stop() {
         if (!active) return
         active = false
+        onLoading(false)
         web.loadUrl("about:blank")
         web.visibility = View.GONE
     }

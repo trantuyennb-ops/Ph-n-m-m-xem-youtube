@@ -10,7 +10,13 @@ import android.os.Build
 import android.os.Bundle
 import android.text.method.LinkMovementMethod
 import android.util.Rational
+import android.view.GestureDetector
+import android.view.KeyEvent
 import android.view.LayoutInflater
+import android.view.MotionEvent
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageButton
@@ -40,6 +46,7 @@ import com.tuyen.tubeviet.History
 import com.tuyen.tubeviet.Item
 import com.tuyen.tubeviet.PlayerSource
 import com.tuyen.tubeviet.R
+import com.tuyen.tubeviet.SearchFeed
 import com.tuyen.tubeviet.Yt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -77,6 +84,17 @@ class WatchActivity : AppCompatActivity() {
     private var loadJob: Job? = null
     private var fullscreen = false
     private lateinit var embed: EmbedPlayer
+    // Chế độ thu nhỏ video + ô tìm kiếm
+    private var minimized = false
+    private lateinit var searchBar: View
+    private lateinit var searchInput: EditText
+    private lateinit var miniInfo: View
+    private lateinit var miniTitle: TextView
+    private lateinit var miniPlay: ImageButton
+    private lateinit var btnMinimize: View
+    private lateinit var searchAdapter: ItemAdapter
+    private var searchController: FeedController? = null
+    private var searchedOnce = false
     private var forcedLandscape = false
     private var headerReady = false
     private lateinit var leftCol: View
@@ -98,7 +116,15 @@ class WatchActivity : AppCompatActivity() {
         playerBox = findViewById(R.id.player_box)
         list = findViewById(R.id.list)
         loadingView = findViewById(R.id.player_loading)
-        embed = EmbedPlayer(findViewById(R.id.web_player))
+        embed = EmbedPlayer(findViewById(R.id.web_player)) { loading ->
+            loadingView.visibility = if (loading) View.VISIBLE else View.GONE
+        }
+        searchBar = findViewById(R.id.search_bar)
+        searchInput = findViewById(R.id.search_input)
+        miniInfo = findViewById(R.id.mini_info)
+        miniTitle = findViewById(R.id.mini_title)
+        miniPlay = findViewById(R.id.mini_play)
+        btnMinimize = findViewById(R.id.btn_minimize)
         errorBox = findViewById(R.id.player_error)
         errorText = findViewById(R.id.player_error_text)
         overlay = findViewById(R.id.overlay_buttons)
@@ -124,15 +150,25 @@ class WatchActivity : AppCompatActivity() {
         playerView.setShowNextButton(false)
         playerView.setShowPreviousButton(false)
         playerView.setControllerVisibilityListener(
-            StyledPlayerView.ControllerVisibilityListener { v -> overlay.visibility = v }
+            StyledPlayerView.ControllerVisibilityListener { v ->
+                overlay.visibility = v
+                btnMinimize.visibility = v
+            }
         )
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 playerView.keepScreenOn = isPlaying
+                miniPlay.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
             }
 
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_READY) autoRetries = 0
+                // Hiện biểu tượng "Đang tải" khi mạng yếu, video đang chờ tải
+                when (state) {
+                    Player.STATE_BUFFERING -> loadingView.visibility = View.VISIBLE
+                    Player.STATE_READY, Player.STATE_ENDED -> loadingView.visibility = View.GONE
+                    else -> {}
+                }
             }
 
             override fun onPlayerError(error: PlaybackException) = handlePlayerError(error)
@@ -159,10 +195,13 @@ class WatchActivity : AppCompatActivity() {
             currentUrl?.let { load(it, false, keepPosition = true) }
         }
 
+        setupMiniMode()
+
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 when {
                     fullscreen -> setFullscreen(false)
+                    minimized -> setMinimized(false)
                     backStack.isNotEmpty() -> load(backStack.removeLast(), false)
                     else -> finish()
                 }
@@ -205,8 +244,11 @@ class WatchActivity : AppCompatActivity() {
         player.stop()
         player.clearMediaItems()
         embed.stop()
+        miniPlay.visibility = View.VISIBLE
         playerView.visibility = View.VISIBLE
         info = null
+        miniTitle.text = ""
+        if (minimized) setMinimized(false)
         errorBox.visibility = View.GONE
         loadingView.visibility = View.VISIBLE
         headerReady = false
@@ -218,6 +260,7 @@ class WatchActivity : AppCompatActivity() {
             try {
                 val i = withContext(Dispatchers.IO) { StreamInfo.getInfo(Yt.service, url) }
                 info = i
+                miniTitle.text = i.name
                 bindHeader(i)
                 headerReady = true
                 placeHeader()
@@ -317,6 +360,7 @@ class WatchActivity : AppCompatActivity() {
         loadingView.visibility = View.GONE
         overlay.visibility = View.VISIBLE
         embed.play(id, if (positionMs > 0) positionMs / 1000 else 0)
+        miniPlay.visibility = View.GONE
         Toast.makeText(this, "Đang phát bằng trình phát dự phòng", Toast.LENGTH_SHORT).show()
     }
 
@@ -482,11 +526,31 @@ class WatchActivity : AppCompatActivity() {
         val leftLp = leftCol.layoutParams as LinearLayout.LayoutParams
         val boxLp = playerBox.layoutParams as LinearLayout.LayoutParams
         val listLp = list.layoutParams as LinearLayout.LayoutParams
-        val big = fullscreen || inPip()
-        val wide = !big && isWide()
+        val big = (fullscreen || inPip()) && !minimized
+        val wide = !big && !minimized && isWide()
         val screenW = resources.displayMetrics.widthPixels
         root.orientation = if (wide) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        (leftCol as LinearLayout).orientation =
+            if (minimized) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        searchBar.visibility = if (minimized) View.VISIBLE else View.GONE
+        miniInfo.visibility = if (minimized) View.VISIBLE else View.GONE
+        boxLp.width = ViewGroup.LayoutParams.MATCH_PARENT
+        val d = resources.displayMetrics.density
         when {
+            minimized -> {
+                val h = (72 * d).toInt()
+                leftLp.width = ViewGroup.LayoutParams.MATCH_PARENT
+                leftLp.height = h
+                leftLp.weight = 0f
+                boxLp.width = h * 16 / 9
+                boxLp.height = ViewGroup.LayoutParams.MATCH_PARENT
+                boxLp.weight = 0f
+                listLp.width = ViewGroup.LayoutParams.MATCH_PARENT
+                listLp.height = 0
+                listLp.weight = 1f
+                infoScroll.visibility = View.GONE
+                list.visibility = View.VISIBLE
+            }
             big -> {
                 leftLp.width = ViewGroup.LayoutParams.MATCH_PARENT
                 leftLp.height = ViewGroup.LayoutParams.MATCH_PARENT
@@ -534,7 +598,7 @@ class WatchActivity : AppCompatActivity() {
             infoHolder.removeAllViews()
             return
         }
-        if (isWide() && !fullscreen) {
+        if (isWide() && !fullscreen && !minimized) {
             if (header.parent !== infoHolder) {
                 adapter.header = null
                 (header.parent as? ViewGroup)?.removeView(header)
@@ -565,6 +629,7 @@ class WatchActivity : AppCompatActivity() {
 
     private fun enterPip() {
         if (info == null || !hasPip || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (minimized) setMinimized(false)
         try {
             enterPictureInPictureMode(
                 PictureInPictureParams.Builder().setAspectRatio(Rational(16, 9)).build()
@@ -587,6 +652,132 @@ class WatchActivity : AppCompatActivity() {
     }
 
     // ---------------- Vòng đời ----------------
+
+    // ---------------- Vuốt xuống thu nhỏ video + ô tìm kiếm ----------------
+
+    private fun setupMiniMode() {
+        searchAdapter = ItemAdapter(
+            onClick = {
+                if (it.isChannel) Nav.channel(this, it.url) else load(it.url, true)
+            },
+            onChannelClick = { Nav.channel(this, it.uploaderUrl) }
+        )
+        btnMinimize.setOnClickListener { setMinimized(true) }
+
+        // Vuốt xuống trên video: đang toàn màn hình thì thoát toàn màn hình, nếu không thì thu nhỏ.
+        // Vuốt lên / chạm vào thanh mini: mở lại video.
+        val detector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent) = true
+
+            override fun onFling(
+                e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float
+            ): Boolean {
+                val start = e1 ?: return false
+                val dy = e2.y - start.y
+                val dx = e2.x - start.x
+                if (kotlin.math.abs(dy) < 80 * resources.displayMetrics.density ||
+                    kotlin.math.abs(dy) < kotlin.math.abs(dx)
+                ) return false
+                if (dy > 0 && !minimized) {
+                    if (fullscreen) toggleFullscreen() else setMinimized(true)
+                    return true
+                }
+                if (dy < 0 && minimized) {
+                    setMinimized(false)
+                    return true
+                }
+                return false
+            }
+
+            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                if (minimized) {
+                    setMinimized(false)
+                    return true
+                }
+                return false
+            }
+        })
+        val touch = View.OnTouchListener { _, ev ->
+            val handled = detector.onTouchEvent(ev)
+            // Khi thu nhỏ, chặn chạm để không bật thanh điều khiển của trình phát
+            minimized && handled
+        }
+        playerView.setOnTouchListener(touch)
+        findViewById<View>(R.id.web_player).setOnTouchListener(touch)
+        miniTitle.setOnClickListener { setMinimized(false) }
+
+        miniPlay.setOnClickListener {
+            if (player.isPlaying) player.pause() else player.play()
+        }
+        findViewById<View>(R.id.mini_close).setOnClickListener {
+            player.pause()
+            embed.stop()
+            finish()
+        }
+
+        val go = {
+            val q = searchInput.text.toString().trim()
+            if (q.isNotEmpty()) runSearch(q)
+        }
+        findViewById<View>(R.id.search_go).setOnClickListener { go() }
+        searchInput.setOnEditorActionListener { _, actionId, event ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH ||
+                (event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)
+            ) {
+                go()
+                true
+            } else false
+        }
+    }
+
+    private fun runSearch(q: String) {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(searchInput.windowToken, 0)
+        searchInput.clearFocus()
+        if (q.startsWith("http") && Yt.isStreamUrl(q)) {
+            load(q, true)
+            return
+        }
+        searchedOnce = true
+        val c = searchController ?: FeedController(lifecycleScope, list, searchAdapter) { loading, error, empty ->
+            searchAdapter.loading = loading
+            if (error != null) Toast.makeText(this, errorMessage(error), Toast.LENGTH_LONG).show()
+            else if (empty) Toast.makeText(this, "Không tìm thấy kết quả nào", Toast.LENGTH_SHORT).show()
+        }.also { searchController = it }
+        searchAdapter.loading = true
+        c.load(SearchFeed(q))
+    }
+
+    private fun setMinimized(on: Boolean) {
+        if (minimized == on) return
+        if (on && fullscreen) setFullscreen(false)
+        minimized = on
+        val root = findViewById<LinearLayout>(R.id.root)
+        root.removeView(leftCol)
+        if (on) {
+            // Video xuống dưới cùng, ô tìm kiếm + danh sách ở trên
+            root.addView(leftCol)
+            playerView.hideController()
+            playerView.useController = false
+            overlay.visibility = View.GONE
+            btnMinimize.visibility = View.GONE
+            findViewById<View>(R.id.player_loading_text).visibility = View.GONE
+            list.adapter = searchAdapter
+            if (!searchedOnce) {
+                // Chưa tìm gì: hiện video đã xem gần đây
+                searchController?.show(History.all()) ?: searchAdapter.set(History.all())
+            }
+            list.scrollToPosition(0)
+        } else {
+            root.addView(leftCol, root.indexOfChild(searchBar) + 1)
+            playerView.useController = true
+            findViewById<View>(R.id.player_loading_text).visibility = View.VISIBLE
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.hideSoftInputFromWindow(searchInput.windowToken, 0)
+            list.adapter = adapter
+        }
+        updatePlayerSize()
+    }
 
     private fun saveCurrentPosition() {
         val url = currentUrl ?: return
