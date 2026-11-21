@@ -36,6 +36,7 @@ class SearchActivity : AppCompatActivity() {
     private val sugAdapter = SuggestionAdapter()
     private var sugJob: Job? = null
     private var lastQuery = ""
+    private lateinit var voice: VoiceSearch
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,6 +48,8 @@ class SearchActivity : AppCompatActivity() {
         val clear = findViewById<View>(R.id.btn_clear)
 
         findViewById<View>(R.id.btn_back).setOnClickListener { finish() }
+        voice = VoiceSearch(this) { search(it) }
+        findViewById<View>(R.id.btn_mic).setOnClickListener { voice.start() }
         clear.setOnClickListener {
             input.setText("")
             input.requestFocus()
@@ -95,6 +98,13 @@ class SearchActivity : AppCompatActivity() {
 
         input.requestFocus()
         loadSuggestions("")
+        if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_VOICE, false)) {
+            voice.start()
+        }
+    }
+
+    companion object {
+        const val EXTRA_VOICE = "voice"
     }
 
     override fun onBackPressed() {

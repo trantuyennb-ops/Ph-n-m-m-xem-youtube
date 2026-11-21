@@ -76,6 +76,11 @@ class MainActivity : AppCompatActivity() {
         }
         swipe.setOnRefreshListener { reload() }
 
+        findViewById<ImageButton>(R.id.btn_mic).setOnClickListener {
+            startActivity(
+                Intent(this, SearchActivity::class.java).putExtra(SearchActivity.EXTRA_VOICE, true)
+            )
+        }
         findViewById<ImageButton>(R.id.btn_search).setOnClickListener {
             startActivity(Intent(this, SearchActivity::class.java))
         }

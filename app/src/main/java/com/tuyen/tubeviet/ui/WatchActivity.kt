@@ -774,6 +774,11 @@ class WatchActivity : AppCompatActivity() {
             if (q.isNotEmpty()) runSearch(q)
         }
         findViewById<View>(R.id.search_go).setOnClickListener { go() }
+        val voice = VoiceSearch(this) { text ->
+            searchInput.setText(text)
+            runSearch(text)
+        }
+        findViewById<View>(R.id.search_mic).setOnClickListener { voice.start() }
         searchInput.setOnEditorActionListener { _, actionId, event ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH ||
                 (event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)

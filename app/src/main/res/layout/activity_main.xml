@@ -41,6 +41,14 @@
             android:visibility="gone" />
 
         <ImageButton
+                android:id="@+id/btn_mic"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Tìm bằng giọng nói"
+                android:src="@drawable/ic_mic" />
+
+        <ImageButton
             android:id="@+id/btn_search"
             android:layout_width="48dp"
             android:layout_height="48dp"
