@@ -55,6 +55,14 @@
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Tìm kiếm"
             android:src="@drawable/ic_search" />
+
+        <ImageButton
+            android:id="@+id/btn_more"
+            android:layout_width="40dp"
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Thêm"
+            android:src="@drawable/ic_more" />
     </LinearLayout>
 
     <HorizontalScrollView

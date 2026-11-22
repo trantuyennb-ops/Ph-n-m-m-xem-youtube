@@ -7,6 +7,14 @@ import android.view.View
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.widget.PopupMenu
+import com.tuyen.tubeviet.ApkInstaller
+import com.tuyen.tubeviet.BuildConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -47,6 +55,22 @@ class MainActivity : AppCompatActivity() {
     private var selectedChip = 0
     private var onHistory = false
 
+    // Chọn file APK (trên USB) để cài
+    private val pickApk = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@registerForActivityResult
+        val dlg = AlertDialog.Builder(this).setMessage("Đang chuẩn bị cài đặt…")
+            .setCancelable(false).show()
+        lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) { ApkInstaller.installFromUri(this@MainActivity, uri) }
+            } catch (e: Exception) {
+                Toast.makeText(this@MainActivity, "Không cài được: ${e.message}", Toast.LENGTH_LONG).show()
+            } finally {
+                dlg.dismiss()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -84,6 +108,23 @@ class MainActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btn_search).setOnClickListener {
             startActivity(Intent(this, SearchActivity::class.java))
         }
+        findViewById<ImageButton>(R.id.btn_more).setOnClickListener { v ->
+            PopupMenu(this, v).apply {
+                menu.add(0, 1, 0, "Cài file APK từ USB")
+                menu.add(0, 2, 1, "Kiểm tra bản mới")
+                menu.add(0, 3, 2, "Phiên bản ${BuildConfig.VERSION_NAME}").isEnabled = false
+                setOnMenuItemClickListener {
+                    when (it.itemId) {
+                        1 -> if (ApkInstaller.ensurePermission(this@MainActivity)) {
+                            pickApk.launch(arrayOf("*/*"))
+                        }
+                        2 -> checkUpdate()
+                    }
+                    true
+                }
+                show()
+            }
+        }
         findViewById<ImageButton>(R.id.btn_clear).setOnClickListener {
             AlertDialog.Builder(this)
                 .setMessage("Xóa toàn bộ lịch sử xem?")
@@ -115,6 +156,53 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (onHistory) controller.show(History.all())
+    }
+
+    private fun checkUpdate() {
+        val dlg = AlertDialog.Builder(this).setMessage("Đang kiểm tra bản mới…")
+            .setCancelable(false).show()
+        lifecycleScope.launch {
+            val latest = try {
+                withContext(Dispatchers.IO) { ApkInstaller.latestBuild() }
+            } catch (e: Exception) {
+                null
+            }
+            dlg.dismiss()
+            when {
+                latest == null -> Toast.makeText(
+                    this@MainActivity,
+                    "Không kiểm tra được. Bạn có thể tải file APK về USB rồi chọn \"Cài file APK từ USB\".",
+                    Toast.LENGTH_LONG
+                ).show()
+                latest <= BuildConfig.VERSION_CODE -> Toast.makeText(
+                    this@MainActivity, "Bạn đang dùng bản mới nhất", Toast.LENGTH_SHORT
+                ).show()
+                else -> AlertDialog.Builder(this@MainActivity)
+                    .setMessage("Có bản mới (build $latest). Tải và cài ngay?")
+                    .setPositiveButton("Cập nhật") { _, _ -> downloadUpdate() }
+                    .setNegativeButton("Để sau", null)
+                    .show()
+            }
+        }
+    }
+
+    private fun downloadUpdate() {
+        if (!ApkInstaller.ensurePermission(this)) return
+        val dlg = AlertDialog.Builder(this).setMessage("Đang tải bản mới… 0%")
+            .setCancelable(false).show()
+        lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    ApkInstaller.downloadAndInstall(this@MainActivity) { p ->
+                        runOnUiThread { dlg.setMessage("Đang tải bản mới… $p%") }
+                    }
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this@MainActivity, "Không tải được: ${e.message}", Toast.LENGTH_LONG).show()
+            } finally {
+                dlg.dismiss()
+            }
+        }
     }
 
     private fun reload() {
